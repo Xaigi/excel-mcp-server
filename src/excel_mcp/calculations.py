@@ -1,6 +1,8 @@
 from typing import Any
 import logging
 
+from openpyxl import load_workbook
+
 from .workbook import get_or_create_workbook
 from .cell_utils import validate_cell_reference
 from .exceptions import ValidationError, CalculationError
@@ -12,14 +14,20 @@ def apply_formula(
     filepath: str,
     sheet_name: str,
     cell: str,
-    formula: str
+    formula: str,
+    require_existing: bool = False,
 ) -> dict[str, Any]:
     """Apply any Excel formula to a cell."""
+    wb = None
     try:
         if not validate_cell_reference(cell):
             raise ValidationError(f"Invalid cell reference: {cell}")
             
-        wb = get_or_create_workbook(filepath)
+        wb = (
+            load_workbook(filepath)
+            if require_existing
+            else get_or_create_workbook(filepath)
+        )
         if sheet_name not in wb.sheetnames:
             raise ValidationError(f"Sheet '{sheet_name}' not found")
             
@@ -58,3 +66,6 @@ def apply_formula(
     except Exception as e:
         logger.error(f"Failed to apply formula: {e}")
         raise CalculationError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
