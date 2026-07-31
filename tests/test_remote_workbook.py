@@ -82,15 +82,19 @@ class _FakeClient:
 class RemoteWorkbookTests(unittest.TestCase):
     def setUp(self):
         self._old_env = {
-            "HARIS_ALLOWED_URL_HOSTS": os.environ.get("HARIS_ALLOWED_URL_HOSTS"),
-            "HARIS_MAX_FILE_BYTES": os.environ.get("HARIS_MAX_FILE_BYTES"),
-            "HARIS_REQUEST_TIMEOUT_SECONDS": os.environ.get(
-                "HARIS_REQUEST_TIMEOUT_SECONDS"
+            "EXCEL_MCP_ALLOWED_URL_HOSTS": os.environ.get(
+                "EXCEL_MCP_ALLOWED_URL_HOSTS"
+            ),
+            "EXCEL_MCP_MAX_FILE_BYTES": os.environ.get(
+                "EXCEL_MCP_MAX_FILE_BYTES"
+            ),
+            "EXCEL_MCP_REQUEST_TIMEOUT_SECONDS": os.environ.get(
+                "EXCEL_MCP_REQUEST_TIMEOUT_SECONDS"
             ),
         }
-        os.environ["HARIS_ALLOWED_URL_HOSTS"] = ALLOWED_HOST
-        os.environ["HARIS_MAX_FILE_BYTES"] = str(1024 * 1024)
-        os.environ["HARIS_REQUEST_TIMEOUT_SECONDS"] = "30"
+        os.environ["EXCEL_MCP_ALLOWED_URL_HOSTS"] = ALLOWED_HOST
+        os.environ["EXCEL_MCP_MAX_FILE_BYTES"] = str(1024 * 1024)
+        os.environ["EXCEL_MCP_REQUEST_TIMEOUT_SECONDS"] = "30"
 
     def tearDown(self):
         for key, value in self._old_env.items():
@@ -288,7 +292,7 @@ class RemoteWorkbookTests(unittest.TestCase):
         self.assertIn("maximum size", result["error"])
 
     def test_download_rejects_streamed_oversize(self):
-        os.environ["HARIS_MAX_FILE_BYTES"] = "20"
+        os.environ["EXCEL_MCP_MAX_FILE_BYTES"] = "20"
         get_response = _FakeStreamResponse(b"x" * 40)
         fake_client = _FakeClient(get_response=get_response)
 

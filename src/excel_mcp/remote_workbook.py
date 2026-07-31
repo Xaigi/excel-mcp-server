@@ -88,38 +88,42 @@ class RemoteWorkbookError(Exception):
 
 
 def _get_allowed_hosts() -> set[str]:
-    raw = os.environ.get("HARIS_ALLOWED_URL_HOSTS", "").strip()
+    raw = os.environ.get("EXCEL_MCP_ALLOWED_URL_HOSTS", "").strip()
     if not raw:
         return set()
     return {host.strip().lower() for host in raw.split(",") if host.strip()}
 
 
 def _get_max_file_bytes() -> int:
-    raw = os.environ.get("HARIS_MAX_FILE_BYTES", str(DEFAULT_MAX_FILE_BYTES))
+    raw = os.environ.get(
+        "EXCEL_MCP_MAX_FILE_BYTES", str(DEFAULT_MAX_FILE_BYTES)
+    )
     try:
         value = int(raw)
     except ValueError as exc:
         raise RemoteWorkbookError(
-            "Invalid HARIS_MAX_FILE_BYTES configuration"
+            "Invalid EXCEL_MCP_MAX_FILE_BYTES configuration"
         ) from exc
     if value <= 0:
-        raise RemoteWorkbookError("HARIS_MAX_FILE_BYTES must be positive")
+        raise RemoteWorkbookError(
+            "EXCEL_MCP_MAX_FILE_BYTES must be positive"
+        )
     return value
 
 
 def _get_timeout_seconds() -> float:
     raw = os.environ.get(
-        "HARIS_REQUEST_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)
+        "EXCEL_MCP_REQUEST_TIMEOUT_SECONDS", str(DEFAULT_TIMEOUT_SECONDS)
     )
     try:
         value = float(raw)
     except ValueError as exc:
         raise RemoteWorkbookError(
-            "Invalid HARIS_REQUEST_TIMEOUT_SECONDS configuration"
+            "Invalid EXCEL_MCP_REQUEST_TIMEOUT_SECONDS configuration"
         ) from exc
     if value <= 0:
         raise RemoteWorkbookError(
-            "HARIS_REQUEST_TIMEOUT_SECONDS must be positive"
+            "EXCEL_MCP_REQUEST_TIMEOUT_SECONDS must be positive"
         )
     return value
 
@@ -152,7 +156,7 @@ def validate_signed_url(url: str, *, purpose: str) -> None:
     allowed = _get_allowed_hosts()
     if not allowed:
         raise RemoteWorkbookError(
-            "HARIS_ALLOWED_URL_HOSTS is not configured"
+            "EXCEL_MCP_ALLOWED_URL_HOSTS is not configured"
         )
     if hostname not in allowed:
         raise RemoteWorkbookError(
@@ -424,7 +428,7 @@ def execute_workbook_job(
         _require(op in ALLOWED_OPERATIONS, f"Unsupported operation: {operation}")
         max_bytes = _get_max_file_bytes()
 
-        temp_root = tempfile.mkdtemp(prefix=f"haris-{req_id}-")
+        temp_root = tempfile.mkdtemp(prefix=f"excel-{req_id}-")
         try:
             workbook_path = os.path.join(temp_root, "workbook.xlsx")
 
