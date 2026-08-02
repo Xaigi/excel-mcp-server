@@ -176,4 +176,27 @@ def get_all_validation_ranges(worksheet: Worksheet) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"Failed to get validation ranges: {e}")
         
-    return validations 
+    return validations
+
+
+def get_data_validation_info(filepath: str, sheet_name: str) -> Dict[str, Any]:
+    """Return structured data-validation info for a worksheet.
+
+    Always returns ``{sheet_name, validation_rules}`` even when empty.
+    """
+    from openpyxl import load_workbook
+    from .exceptions import ValidationError
+
+    wb = None
+    try:
+        wb = load_workbook(filepath, read_only=False)
+        if sheet_name not in wb.sheetnames:
+            raise ValidationError(f"Sheet '{sheet_name}' not found")
+        rules = get_all_validation_ranges(wb[sheet_name])
+        return {
+            "sheet_name": sheet_name,
+            "validation_rules": rules,
+        }
+    finally:
+        if wb is not None:
+            wb.close()

@@ -16,27 +16,42 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from excel_mcp.calculations import apply_formula
-from excel_mcp.cell_utils import parse_cell_range, parse_cell_range_strict
+from excel_mcp.cell_utils import (
+    MAX_EXCEL_COL,
+    MAX_EXCEL_ROW,
+    parse_cell_range,
+    parse_cell_range_strict,
+)
+from excel_mcp.cell_validation import get_data_validation_info
+from excel_mcp.chart import create_chart_in_sheet
 from excel_mcp.data import write_data
 from excel_mcp.exceptions import (
     CalculationError,
+    ChartError,
     DataError,
     FormattingError,
+    PivotError,
     SheetError,
     ValidationError,
     WorkbookError,
 )
 from excel_mcp.formatting import format_range, validate_format_options
+from excel_mcp.pivot import create_pivot_table
 from excel_mcp.sheet import (
     copy_range_operation,
     copy_sheet,
+    delete_cols,
     delete_range_operation,
+    delete_rows,
     delete_sheet,
     get_merged_ranges,
+    insert_cols,
+    insert_row,
     merge_range,
     rename_sheet,
     unmerge_range,
 )
+from excel_mcp.tables import create_excel_table
 from excel_mcp.validation import (
     validate_formula_in_cell_operation,
     validate_range_in_sheet_operation,
@@ -72,7 +87,21 @@ ALLOWED_OPERATIONS = frozenset(
         "get_merged_cells",
         "validate_excel_range",
         "get_workbook_metadata",
+        "get_data_validation_info",
+        "create_chart",
+        "create_table",
+        "create_pivot_table",
+        "insert_rows",
+        "insert_columns",
+        "delete_sheet_rows",
+        "delete_sheet_columns",
     }
+)
+ALLOWED_REMOTE_CHART_TYPES = frozenset(
+    {"line", "bar", "pie", "scatter", "area"}
+)
+ALLOWED_REMOTE_AGG_FUNCS = frozenset(
+    {"sum", "average", "count", "min", "max"}
 )
 XLSX_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -389,6 +418,13 @@ def _require(condition: bool, message: str) -> None:
         raise RemoteWorkbookError(message)
 
 
+def require_positive_int(value: Any, *, field_name: str) -> int:
+    """Accept only real JSON integers >= 1 (reject bool/float/str)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValidationError(f"{field_name} must be a positive integer")
+    return value
+
+
 def execute_workbook_job(
     operation: str,
     request_id: Optional[str] = None,
@@ -413,6 +449,21 @@ def execute_workbook_job(
     target_start: Optional[str] = None,
     shift_direction: str = "up",
     include_ranges: bool = False,
+    data_range: Optional[str] = None,
+    chart_type: Optional[str] = None,
+    target_cell: Optional[str] = None,
+    title: str = "",
+    x_axis: str = "",
+    y_axis: str = "",
+    table_name: Optional[str] = None,
+    table_style: str = "TableStyleMedium9",
+    rows: Optional[List[str]] = None,
+    values: Optional[List[str]] = None,
+    columns: Optional[List[str]] = None,
+    agg_func: str = "sum",
+    start_row: Optional[int] = None,
+    start_col: Optional[int] = None,
+    count: int = 1,
 ) -> Dict[str, Any]:
     """Run one atomic workbook job using signed URLs."""
     req_id = request_id or str(uuid.uuid4())
@@ -876,7 +927,7 @@ def execute_workbook_job(
                     "data": range_data,
                 }
 
-            else:  # get_workbook_metadata
+            elif op == "get_workbook_metadata":
                 _require(
                     bool(input_download_url),
                     "input_download_url is required for get_workbook_metadata",
@@ -899,6 +950,311 @@ def execute_workbook_job(
                     "data": metadata,
                 }
 
+            elif op == "get_data_validation_info":
+                _require(
+                    bool(input_download_url),
+                    "input_download_url is required for get_data_validation_info",
+                )
+                _require(
+                    bool(sheet_name),
+                    "sheet_name is required for get_data_validation_info",
+                )
+                validate_worksheet_name(sheet_name)
+
+                download_to_file(input_download_url, workbook_path, max_bytes)
+                validation_data = get_data_validation_info(
+                    workbook_path, sheet_name
+                )
+                response = {
+                    "success": True,
+                    "operation": op,
+                    "output_uploaded": False,
+                    "data": validation_data,
+                }
+
+            elif op == "create_chart":
+                _require(
+                    bool(input_download_url),
+                    "input_download_url is required for create_chart",
+                )
+                _require(
+                    bool(output_upload_url),
+                    "output_upload_url is required for create_chart",
+                )
+                _require(
+                    bool(sheet_name),
+                    "sheet_name is required for create_chart",
+                )
+                _require(
+                    bool(data_range),
+                    "data_range is required for create_chart",
+                )
+                _require(
+                    bool(chart_type),
+                    "chart_type is required for create_chart",
+                )
+                _require(
+                    bool(target_cell),
+                    "target_cell is required for create_chart",
+                )
+                validate_worksheet_name(sheet_name)
+                chart_type_norm = str(chart_type).strip().lower()
+                _require(
+                    chart_type_norm in ALLOWED_REMOTE_CHART_TYPES,
+                    "Unsupported chart_type; allowed: line, bar, pie, scatter, area",
+                )
+
+                download_to_file(input_download_url, workbook_path, max_bytes)
+                create_chart_in_sheet(
+                    workbook_path,
+                    sheet_name,
+                    data_range,
+                    chart_type_norm,
+                    target_cell,
+                    title=title or "",
+                    x_axis=x_axis or "",
+                    y_axis=y_axis or "",
+                )
+                response = _upload_mutation_result(
+                    op,
+                    output_upload_url,
+                    workbook_path,
+                    upload_headers,
+                    output_content_type,
+                )
+
+            elif op == "create_table":
+                _require(
+                    bool(input_download_url),
+                    "input_download_url is required for create_table",
+                )
+                _require(
+                    bool(output_upload_url),
+                    "output_upload_url is required for create_table",
+                )
+                _require(
+                    bool(sheet_name),
+                    "sheet_name is required for create_table",
+                )
+                _require(
+                    bool(data_range),
+                    "data_range is required for create_table",
+                )
+                validate_worksheet_name(sheet_name)
+
+                download_to_file(input_download_url, workbook_path, max_bytes)
+                create_excel_table(
+                    workbook_path,
+                    sheet_name,
+                    data_range,
+                    table_name=table_name,
+                    table_style=table_style or "TableStyleMedium9",
+                )
+                response = _upload_mutation_result(
+                    op,
+                    output_upload_url,
+                    workbook_path,
+                    upload_headers,
+                    output_content_type,
+                )
+
+            elif op == "insert_rows":
+                _require(
+                    bool(input_download_url),
+                    "input_download_url is required for insert_rows",
+                )
+                _require(
+                    bool(output_upload_url),
+                    "output_upload_url is required for insert_rows",
+                )
+                _require(
+                    bool(sheet_name),
+                    "sheet_name is required for insert_rows",
+                )
+                if start_col is not None:
+                    raise RemoteWorkbookError(
+                        "start_col is not allowed for insert_rows"
+                    )
+                validate_worksheet_name(sheet_name)
+                row = require_positive_int(start_row, field_name="start_row")
+                n = require_positive_int(count, field_name="count")
+                if row > MAX_EXCEL_ROW or row + n - 1 > MAX_EXCEL_ROW:
+                    raise ValidationError(
+                        f"start_row/count would exceed Excel's maximum row "
+                        f"({MAX_EXCEL_ROW})"
+                    )
+
+                download_to_file(input_download_url, workbook_path, max_bytes)
+                insert_row(workbook_path, sheet_name, row, n)
+                response = _upload_mutation_result(
+                    op,
+                    output_upload_url,
+                    workbook_path,
+                    upload_headers,
+                    output_content_type,
+                )
+
+            elif op == "insert_columns":
+                _require(
+                    bool(input_download_url),
+                    "input_download_url is required for insert_columns",
+                )
+                _require(
+                    bool(output_upload_url),
+                    "output_upload_url is required for insert_columns",
+                )
+                _require(
+                    bool(sheet_name),
+                    "sheet_name is required for insert_columns",
+                )
+                if start_row is not None:
+                    raise RemoteWorkbookError(
+                        "start_row is not allowed for insert_columns"
+                    )
+                validate_worksheet_name(sheet_name)
+                col = require_positive_int(start_col, field_name="start_col")
+                n = require_positive_int(count, field_name="count")
+                if col > MAX_EXCEL_COL or col + n - 1 > MAX_EXCEL_COL:
+                    raise ValidationError(
+                        f"start_col/count would exceed Excel's maximum column "
+                        f"({MAX_EXCEL_COL})"
+                    )
+
+                download_to_file(input_download_url, workbook_path, max_bytes)
+                insert_cols(workbook_path, sheet_name, col, n)
+                response = _upload_mutation_result(
+                    op,
+                    output_upload_url,
+                    workbook_path,
+                    upload_headers,
+                    output_content_type,
+                )
+
+            elif op == "delete_sheet_rows":
+                _require(
+                    bool(input_download_url),
+                    "input_download_url is required for delete_sheet_rows",
+                )
+                _require(
+                    bool(output_upload_url),
+                    "output_upload_url is required for delete_sheet_rows",
+                )
+                _require(
+                    bool(sheet_name),
+                    "sheet_name is required for delete_sheet_rows",
+                )
+                if start_col is not None:
+                    raise RemoteWorkbookError(
+                        "start_col is not allowed for delete_sheet_rows"
+                    )
+                validate_worksheet_name(sheet_name)
+                row = require_positive_int(start_row, field_name="start_row")
+                n = require_positive_int(count, field_name="count")
+                if row > MAX_EXCEL_ROW:
+                    raise ValidationError(
+                        f"start_row exceeds Excel's maximum row ({MAX_EXCEL_ROW})"
+                    )
+
+                download_to_file(input_download_url, workbook_path, max_bytes)
+                delete_rows(workbook_path, sheet_name, row, n)
+                response = _upload_mutation_result(
+                    op,
+                    output_upload_url,
+                    workbook_path,
+                    upload_headers,
+                    output_content_type,
+                )
+
+            elif op == "delete_sheet_columns":
+                _require(
+                    bool(input_download_url),
+                    "input_download_url is required for delete_sheet_columns",
+                )
+                _require(
+                    bool(output_upload_url),
+                    "output_upload_url is required for delete_sheet_columns",
+                )
+                _require(
+                    bool(sheet_name),
+                    "sheet_name is required for delete_sheet_columns",
+                )
+                if start_row is not None:
+                    raise RemoteWorkbookError(
+                        "start_row is not allowed for delete_sheet_columns"
+                    )
+                validate_worksheet_name(sheet_name)
+                col = require_positive_int(start_col, field_name="start_col")
+                n = require_positive_int(count, field_name="count")
+                if col > MAX_EXCEL_COL:
+                    raise ValidationError(
+                        f"start_col exceeds Excel's maximum column "
+                        f"({MAX_EXCEL_COL})"
+                    )
+
+                download_to_file(input_download_url, workbook_path, max_bytes)
+                delete_cols(workbook_path, sheet_name, col, n)
+                response = _upload_mutation_result(
+                    op,
+                    output_upload_url,
+                    workbook_path,
+                    upload_headers,
+                    output_content_type,
+                )
+
+            else:  # create_pivot_table
+                _require(
+                    bool(input_download_url),
+                    "input_download_url is required for create_pivot_table",
+                )
+                _require(
+                    bool(output_upload_url),
+                    "output_upload_url is required for create_pivot_table",
+                )
+                _require(
+                    bool(sheet_name),
+                    "sheet_name is required for create_pivot_table",
+                )
+                _require(
+                    bool(data_range),
+                    "data_range is required for create_pivot_table",
+                )
+                _require(
+                    isinstance(rows, list) and len(rows) > 0,
+                    "rows is required for create_pivot_table",
+                )
+                _require(
+                    isinstance(values, list) and len(values) > 0,
+                    "values is required for create_pivot_table",
+                )
+                if columns is not None and not isinstance(columns, list):
+                    raise RemoteWorkbookError(
+                        "columns must be an array of field names when provided"
+                    )
+                validate_worksheet_name(sheet_name)
+                agg = (agg_func or "sum").strip().lower()
+                _require(
+                    agg in ALLOWED_REMOTE_AGG_FUNCS,
+                    "Unsupported agg_func; allowed: sum, average, count, min, max",
+                )
+
+                download_to_file(input_download_url, workbook_path, max_bytes)
+                create_pivot_table(
+                    workbook_path,
+                    sheet_name,
+                    data_range,
+                    rows=rows,
+                    values=values,
+                    columns=columns or [],
+                    agg_func=agg,
+                )
+                response = _upload_mutation_result(
+                    op,
+                    output_upload_url,
+                    workbook_path,
+                    upload_headers,
+                    output_content_type,
+                )
+
             logger.info(
                 "remote_workbook_job success request_id=%s operation=%s",
                 req_id,
@@ -918,8 +1274,10 @@ def execute_workbook_job(
         return {"success": False, "error": exc.message}
     except (
         CalculationError,
+        ChartError,
         DataError,
         FormattingError,
+        PivotError,
         SheetError,
         ValidationError,
         WorkbookError,

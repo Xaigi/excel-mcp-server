@@ -510,108 +510,175 @@ def delete_range_operation(
 
 def insert_row(filepath: str, sheet_name: str, start_row: int, count: int = 1) -> Dict[str, Any]:
     """Insert one or more rows starting at the specified row."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if start_row < 1 or start_row > MAX_EXCEL_ROW:
+            raise ValidationError(
+                f"Start row must be between 1 and {MAX_EXCEL_ROW}"
+            )
+        if count < 1:
+            raise ValidationError("Count must be 1 or greater")
+        if start_row + count - 1 > MAX_EXCEL_ROW:
+            raise ValidationError(
+                f"Insert would exceed Excel's maximum row ({MAX_EXCEL_ROW})"
+            )
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate parameters
-        if start_row < 1:
-            raise ValidationError("Start row must be 1 or greater")
-        if count < 1:
-            raise ValidationError("Count must be 1 or greater")
-            
+        if worksheet.max_row + count > MAX_EXCEL_ROW:
+            raise ValidationError(
+                f"Inserting {count} row(s) would push used data past "
+                f"Excel's maximum row ({MAX_EXCEL_ROW})"
+            )
+
         worksheet.insert_rows(start_row, count)
         wb.save(filepath)
-        
-        return {"message": f"Inserted {count} row(s) starting at row {start_row} in sheet '{sheet_name}'"}
-    except (ValidationError, SheetError) as e:
-        logger.error(str(e))
+
+        return {
+            "message": (
+                f"Inserted {count} row(s) starting at row {start_row} "
+                f"in sheet '{sheet_name}'"
+            )
+        }
+    except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to insert rows: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def insert_cols(filepath: str, sheet_name: str, start_col: int, count: int = 1) -> Dict[str, Any]:
     """Insert one or more columns starting at the specified column."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if start_col < 1 or start_col > MAX_EXCEL_COL:
+            raise ValidationError(
+                f"Start column must be between 1 and {MAX_EXCEL_COL}"
+            )
+        if count < 1:
+            raise ValidationError("Count must be 1 or greater")
+        if start_col + count - 1 > MAX_EXCEL_COL:
+            raise ValidationError(
+                f"Insert would exceed Excel's maximum column ({MAX_EXCEL_COL})"
+            )
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate parameters
-        if start_col < 1:
-            raise ValidationError("Start column must be 1 or greater")
-        if count < 1:
-            raise ValidationError("Count must be 1 or greater")
-            
+        if worksheet.max_column + count > MAX_EXCEL_COL:
+            raise ValidationError(
+                f"Inserting {count} column(s) would push used data past "
+                f"Excel's maximum column ({MAX_EXCEL_COL})"
+            )
+
         worksheet.insert_cols(start_col, count)
         wb.save(filepath)
-        
-        return {"message": f"Inserted {count} column(s) starting at column {start_col} in sheet '{sheet_name}'"}
-    except (ValidationError, SheetError) as e:
-        logger.error(str(e))
+
+        return {
+            "message": (
+                f"Inserted {count} column(s) starting at column {start_col} "
+                f"in sheet '{sheet_name}'"
+            )
+        }
+    except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to insert columns: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def delete_rows(filepath: str, sheet_name: str, start_row: int, count: int = 1) -> Dict[str, Any]:
     """Delete one or more rows starting at the specified row."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if start_row < 1 or start_row > MAX_EXCEL_ROW:
+            raise ValidationError(
+                f"Start row must be between 1 and {MAX_EXCEL_ROW}"
+            )
+        if count < 1:
+            raise ValidationError("Count must be 1 or greater")
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate parameters
-        if start_row < 1:
-            raise ValidationError("Start row must be 1 or greater")
-        if count < 1:
-            raise ValidationError("Count must be 1 or greater")
         if start_row > worksheet.max_row:
-            raise ValidationError(f"Start row {start_row} exceeds worksheet bounds (max row: {worksheet.max_row})")
-            
+            raise ValidationError(
+                f"Start row {start_row} exceeds worksheet bounds "
+                f"(max row: {worksheet.max_row})"
+            )
+
         worksheet.delete_rows(start_row, count)
         wb.save(filepath)
-        
-        return {"message": f"Deleted {count} row(s) starting at row {start_row} in sheet '{sheet_name}'"}
-    except (ValidationError, SheetError) as e:
-        logger.error(str(e))
+
+        return {
+            "message": (
+                f"Deleted {count} row(s) starting at row {start_row} "
+                f"in sheet '{sheet_name}'"
+            )
+        }
+    except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to delete rows: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def delete_cols(filepath: str, sheet_name: str, start_col: int, count: int = 1) -> Dict[str, Any]:
     """Delete one or more columns starting at the specified column."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if start_col < 1 or start_col > MAX_EXCEL_COL:
+            raise ValidationError(
+                f"Start column must be between 1 and {MAX_EXCEL_COL}"
+            )
+        if count < 1:
+            raise ValidationError("Count must be 1 or greater")
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate parameters
-        if start_col < 1:
-            raise ValidationError("Start column must be 1 or greater")
-        if count < 1:
-            raise ValidationError("Count must be 1 or greater")
         if start_col > worksheet.max_column:
-            raise ValidationError(f"Start column {start_col} exceeds worksheet bounds (max column: {worksheet.max_column})")
-            
+            raise ValidationError(
+                f"Start column {start_col} exceeds worksheet bounds "
+                f"(max column: {worksheet.max_column})"
+            )
+
         worksheet.delete_cols(start_col, count)
         wb.save(filepath)
-        
-        return {"message": f"Deleted {count} column(s) starting at column {start_col} in sheet '{sheet_name}'"}
-    except (ValidationError, SheetError) as e:
-        logger.error(str(e))
+
+        return {
+            "message": (
+                f"Deleted {count} column(s) starting at column {start_col} "
+                f"in sheet '{sheet_name}'"
+            )
+        }
+    except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to delete columns: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()

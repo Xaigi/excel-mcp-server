@@ -357,6 +357,21 @@ def execute_workbook_job(
     target_start: Optional[str] = None,
     shift_direction: str = "up",
     include_ranges: bool = False,
+    data_range: Optional[str] = None,
+    chart_type: Optional[str] = None,
+    target_cell: Optional[str] = None,
+    title: str = "",
+    x_axis: str = "",
+    y_axis: str = "",
+    table_name: Optional[str] = None,
+    table_style: str = "TableStyleMedium9",
+    rows: Optional[List[str]] = None,
+    values: Optional[List[str]] = None,
+    columns: Optional[List[str]] = None,
+    agg_func: str = "sum",
+    start_row: Optional[int] = None,
+    start_col: Optional[int] = None,
+    count: int = 1,
 ) -> Dict[str, Any]:
     """
     Run one atomic Excel job using signed S3 URLs.
@@ -388,6 +403,21 @@ def execute_workbook_job(
         target_start=target_start,
         shift_direction=shift_direction,
         include_ranges=include_ranges,
+        data_range=data_range,
+        chart_type=chart_type,
+        target_cell=target_cell,
+        title=title,
+        x_axis=x_axis,
+        y_axis=y_axis,
+        table_name=table_name,
+        table_style=table_style,
+        rows=rows,
+        values=values,
+        columns=columns,
+        agg_func=agg_func,
+        start_row=start_row,
+        start_col=start_col,
+        count=count,
     )
 
 @mcp.tool(
@@ -458,7 +488,7 @@ def create_pivot_table(
     rows: List[str],
     values: List[str],
     columns: Optional[List[str]] = None,
-    agg_func: str = "mean"
+    agg_func: str = "sum"
 ) -> str:
     """Create pivot table in worksheet."""
     try:
@@ -503,7 +533,7 @@ def create_table(
             table_style=table_style
         )
         return result["message"]
-    except DataError as e:
+    except (DataError, ValidationError) as e:
         return f"Error: {str(e)}"
     except Exception as e:
         logger.error(f"Error creating table: {e}")
@@ -761,26 +791,13 @@ def get_data_validation_info(
     """
     try:
         full_path = get_excel_path(filepath)
-        from openpyxl import load_workbook
-        from excel_mcp.cell_validation import get_all_validation_ranges
-        
-        wb = load_workbook(full_path, read_only=False)
-        if sheet_name not in wb.sheetnames:
-            return f"Error: Sheet '{sheet_name}' not found"
-            
-        ws = wb[sheet_name]
-        validations = get_all_validation_ranges(ws)
-        wb.close()
-        
-        if not validations:
-            return "No data validation rules found in this worksheet"
-            
+        from excel_mcp.cell_validation import get_data_validation_info as get_info
         import json
-        return json.dumps({
-            "sheet_name": sheet_name,
-            "validation_rules": validations
-        }, indent=2, default=str)
-        
+
+        result = get_info(full_path, sheet_name)
+        return json.dumps(result, indent=2, default=str)
+    except ValidationError as e:
+        return f"Error: {str(e)}"
     except Exception as e:
         logger.error(f"Error getting validation info: {e}")
         raise

@@ -914,6 +914,594 @@ class RemoteWorkbookTests(unittest.TestCase):
         self.assertIn("Invalid cell reference", result["error"])
         self.assertEqual(fake_client.get_calls, [])
 
+    def test_get_data_validation_info_empty(self):
+        def configure(wb):
+            wb["Sheet1"]["A1"] = "x"
+
+        source = self._workbook_bytes(configure)
+        fake_client = _FakeClient(get_response=_FakeStreamResponse(source))
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="get_data_validation_info",
+                input_download_url=_url("/in.xlsx"),
+                sheet_name="Sheet1",
+            )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["operation"], "get_data_validation_info")
+        self.assertFalse(result["output_uploaded"])
+        self.assertEqual(
+            result["data"],
+            {"sheet_name": "Sheet1", "validation_rules": []},
+        )
+        self.assertEqual(fake_client.put_calls, [])
+
+    def test_get_data_validation_info_with_list(self):
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        def configure(wb):
+            ws = wb["Sheet1"]
+            ws["A1"] = "Status"
+            ws["A2"] = "Open"
+            dv = DataValidation(
+                type="list",
+                formula1='"Open,Closed"',
+                allow_blank=True,
+            )
+            dv.add("B2:B20")
+            ws.add_data_validation(dv)
+
+        source = self._workbook_bytes(configure)
+        fake_client = _FakeClient(get_response=_FakeStreamResponse(source))
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="get_data_validation_info",
+                input_download_url=_url("/in.xlsx"),
+                sheet_name="Sheet1",
+            )
+        self.assertTrue(result["success"])
+        rules = result["data"]["validation_rules"]
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["validation_type"], "list")
+        self.assertEqual(rules[0]["ranges"], "B2:B20")
+        self.assertEqual(rules[0]["allowed_values"], ["Open", "Closed"])
+
+    def test_create_chart_uploads_and_places_chart(self):
+        def configure(wb):
+            ws = wb["Sheet1"]
+            ws["A1"] = "Name"
+            ws["B1"] = "Score"
+            ws["A2"] = "Ada"
+            ws["B2"] = 10
+            ws["A3"] = "Bob"
+            ws["B3"] = 20
+
+        source = self._workbook_bytes(configure)
+        put_response = MagicMock(status_code=200, is_redirect=False)
+        fake_client = _FakeClient(
+            get_response=_FakeStreamResponse(source),
+            put_response=put_response,
+        )
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="create_chart",
+                input_download_url=_url("/in.xlsx"),
+                output_upload_url=_url("/out.xlsx"),
+                sheet_name="Sheet1",
+                data_range="A1:B3",
+                chart_type="bar",
+                target_cell="AA1",
+                title="Scores",
+            )
+        self.assertTrue(result["success"])
+        self.assertTrue(result["output_uploaded"])
+        self.assertIsNone(result["data"])
+        wb = load_workbook(io.BytesIO(fake_client.put_calls[0]["body"]))
+        try:
+            self.assertEqual(len(wb["Sheet1"]._charts), 1)
+        finally:
+            wb.close()
+
+    def test_create_chart_rejects_unsupported_type(self):
+        fake_client = _FakeClient()
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="create_chart",
+                input_download_url=_url("/in.xlsx"),
+                output_upload_url=_url("/out.xlsx"),
+                sheet_name="Sheet1",
+                data_range="A1:B3",
+                chart_type="bubble",
+                target_cell="E2",
+            )
+        self.assertFalse(result["success"])
+        self.assertIn("chart_type", result["error"])
+        self.assertEqual(fake_client.get_calls, [])
+
+    def test_create_table_uploads(self):
+        def configure(wb):
+            ws = wb["Sheet1"]
+            ws["A1"] = "Name"
+            ws["B1"] = "Score"
+            ws["A2"] = "Ada"
+            ws["B2"] = 10
+
+        source = self._workbook_bytes(configure)
+        put_response = MagicMock(status_code=200, is_redirect=False)
+        fake_client = _FakeClient(
+            get_response=_FakeStreamResponse(source),
+            put_response=put_response,
+        )
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="create_table",
+                input_download_url=_url("/in.xlsx"),
+                output_upload_url=_url("/out.xlsx"),
+                sheet_name="Sheet1",
+                data_range="A1:B2",
+                table_name="ScoresTable",
+            )
+        self.assertTrue(result["success"])
+        wb = load_workbook(io.BytesIO(fake_client.put_calls[0]["body"]))
+        try:
+            self.assertIn("ScoresTable", wb["Sheet1"].tables)
+        finally:
+            wb.close()
+
+    def test_create_table_rejects_bad_style(self):
+        def configure(wb):
+            ws = wb["Sheet1"]
+            ws["A1"] = "Name"
+            ws["B1"] = "Score"
+            ws["A2"] = "Ada"
+            ws["B2"] = 10
+
+        source = self._workbook_bytes(configure)
+        fake_client = _FakeClient(get_response=_FakeStreamResponse(source))
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="create_table",
+                input_download_url=_url("/in.xlsx"),
+                output_upload_url=_url("/out.xlsx"),
+                sheet_name="Sheet1",
+                data_range="A1:B2",
+                table_style="NotARealStyle",
+            )
+        self.assertFalse(result["success"])
+        self.assertIn("table_style", result["error"])
+        self.assertEqual(fake_client.put_calls, [])
+
+    def test_create_pivot_table_with_column_grouping(self):
+        def configure(wb):
+            ws = wb["Sheet1"]
+            headers = ["Region", "Category", "Score"]
+            rows = [
+                ["East", "A", 10],
+                ["East", "B", 5],
+                ["West", "A", 7],
+                ["West", "B", "3"],  # numeric string
+            ]
+            for col, header in enumerate(headers, start=1):
+                ws.cell(1, col, header)
+            for r_idx, row in enumerate(rows, start=2):
+                for c_idx, value in enumerate(row, start=1):
+                    ws.cell(r_idx, c_idx, value)
+
+        source = self._workbook_bytes(configure)
+        put_response = MagicMock(status_code=200, is_redirect=False)
+        fake_client = _FakeClient(
+            get_response=_FakeStreamResponse(source),
+            put_response=put_response,
+        )
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="create_pivot_table",
+                input_download_url=_url("/in.xlsx"),
+                output_upload_url=_url("/out.xlsx"),
+                sheet_name="Sheet1",
+                data_range="A1:C5",
+                rows=["Region"],
+                columns=["Category"],
+                values=["Score"],
+                agg_func="sum",
+            )
+        self.assertTrue(result["success"])
+        self.assertIsNone(result["data"])
+        wb = load_workbook(io.BytesIO(fake_client.put_calls[0]["body"]))
+        try:
+            self.assertIn("Sheet1_pivot", wb.sheetnames)
+            pivot = wb["Sheet1_pivot"]
+            headers = [pivot.cell(1, c).value for c in range(1, 4)]
+            self.assertEqual(headers[0], "Region")
+            self.assertTrue(any("Category=A" in str(h) for h in headers[1:]))
+            self.assertTrue(any("Category=B" in str(h) for h in headers[1:]))
+            # Find East row and verify A=10, B=5
+            east_row = None
+            for r in range(2, pivot.max_row + 1):
+                if pivot.cell(r, 1).value == "East":
+                    east_row = r
+                    break
+            self.assertIsNotNone(east_row)
+            values_by_header = {
+                pivot.cell(1, c).value: pivot.cell(east_row, c).value
+                for c in range(2, 4)
+            }
+            a_key = next(k for k in values_by_header if "Category=A" in str(k))
+            b_key = next(k for k in values_by_header if "Category=B" in str(k))
+            self.assertEqual(values_by_header[a_key], 10)
+            self.assertEqual(values_by_header[b_key], 5)
+        finally:
+            wb.close()
+
+    def test_create_pivot_rejects_mean(self):
+        fake_client = _FakeClient()
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="create_pivot_table",
+                input_download_url=_url("/in.xlsx"),
+                output_upload_url=_url("/out.xlsx"),
+                sheet_name="Sheet1",
+                data_range="A1:C5",
+                rows=["Region"],
+                values=["Score"],
+                agg_func="mean",
+            )
+        self.assertFalse(result["success"])
+        self.assertIn("agg_func", result["error"])
+        self.assertEqual(fake_client.get_calls, [])
+
+
+class Phase5LocalHelperTests(unittest.TestCase):
+    def test_chart_uses_add_chart_and_supports_aa1(self):
+        from excel_mcp.chart import create_chart_in_sheet
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "chart.xlsx")
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Sheet1"
+            ws["A1"] = "Name"
+            ws["B1"] = "Score"
+            ws["A2"] = "Ada"
+            ws["B2"] = 10
+            wb.save(path)
+            wb.close()
+
+            create_chart_in_sheet(
+                path,
+                "Sheet1",
+                "A1:B2",
+                "line",
+                "AA1",
+                title="T",
+            )
+            reopened = load_workbook(path)
+            try:
+                self.assertEqual(len(reopened["Sheet1"]._charts), 1)
+            finally:
+                reopened.close()
+
+    def test_table_rejects_cell_like_name(self):
+        from excel_mcp.tables import create_excel_table
+        from excel_mcp.exceptions import DataError
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "table.xlsx")
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Sheet1"
+            ws["A1"] = "Name"
+            ws["B1"] = "Score"
+            ws["A2"] = "Ada"
+            ws["B2"] = 10
+            wb.save(path)
+            wb.close()
+
+            with self.assertRaises(DataError):
+                create_excel_table(
+                    path, "Sheet1", "A1:B2", table_name="A1"
+                )
+
+    def test_pivot_numeric_string_grouping_and_replace(self):
+        from excel_mcp.pivot import create_pivot_table
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "pivot.xlsx")
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Sheet1"
+            for col, header in enumerate(["Region", "Score"], start=1):
+                ws.cell(1, col, header)
+            ws.cell(2, 1, 10)
+            ws.cell(2, 2, 5)
+            ws.cell(3, 1, "10")
+            ws.cell(3, 2, 7)
+            wb.save(path)
+            wb.close()
+
+            create_pivot_table(
+                path,
+                "Sheet1",
+                "A1:B3",
+                rows=["Region"],
+                values=["Score"],
+                agg_func="sum",
+            )
+            create_pivot_table(
+                path,
+                "Sheet1",
+                "A1:B3",
+                rows=["Region"],
+                values=["Score"],
+                agg_func="sum",
+            )
+            reopened = load_workbook(path)
+            try:
+                self.assertEqual(
+                    reopened.sheetnames.count("Sheet1_pivot"), 1
+                )
+                pivot = reopened["Sheet1_pivot"]
+                # One grouped row for key "10" with sum 12
+                self.assertEqual(pivot["A2"].value, "10")
+                self.assertEqual(pivot["B2"].value, 12)
+            finally:
+                reopened.close()
+
+    def test_validation_info_always_structured(self):
+        from excel_mcp.cell_validation import get_data_validation_info
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "val.xlsx")
+            wb = Workbook()
+            wb.active.title = "Sheet1"
+            wb.save(path)
+            wb.close()
+            info = get_data_validation_info(path, "Sheet1")
+            self.assertEqual(
+                info, {"sheet_name": "Sheet1", "validation_rules": []}
+            )
+
+
+class Phase4RemoteTests(unittest.TestCase):
+    def setUp(self):
+        self._old_env = {
+            "EXCEL_MCP_ALLOWED_URL_HOSTS": os.environ.get(
+                "EXCEL_MCP_ALLOWED_URL_HOSTS"
+            ),
+            "EXCEL_MCP_MAX_FILE_BYTES": os.environ.get(
+                "EXCEL_MCP_MAX_FILE_BYTES"
+            ),
+            "EXCEL_MCP_REQUEST_TIMEOUT_SECONDS": os.environ.get(
+                "EXCEL_MCP_REQUEST_TIMEOUT_SECONDS"
+            ),
+        }
+        os.environ["EXCEL_MCP_ALLOWED_URL_HOSTS"] = ALLOWED_HOST
+        os.environ["EXCEL_MCP_MAX_FILE_BYTES"] = str(1024 * 1024)
+        os.environ["EXCEL_MCP_REQUEST_TIMEOUT_SECONDS"] = "30"
+
+    def tearDown(self):
+        for key, value in self._old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _sample_bytes(self) -> bytes:
+        stream = io.BytesIO()
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        data = [
+            ["Name", "Score", "Region"],
+            ["Ada", 10, "West"],
+            ["Bob", 20, "East"],
+            ["Cara", 30, "West"],
+        ]
+        for r, row in enumerate(data, start=1):
+            for c, value in enumerate(row, start=1):
+                ws.cell(r, c, value)
+        wb.save(stream)
+        wb.close()
+        return stream.getvalue()
+
+    def _run_mutation(self, **kwargs):
+        source = self._sample_bytes()
+        put_response = MagicMock(status_code=200, is_redirect=False)
+        fake_client = _FakeClient(
+            get_response=_FakeStreamResponse(source),
+            put_response=put_response,
+        )
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                input_download_url=_url("/in.xlsx"),
+                output_upload_url=_url("/out.xlsx"),
+                sheet_name="Sheet1",
+                **kwargs,
+            )
+        return result, fake_client
+
+    def test_insert_rows_shifts_down(self):
+        result, fake_client = self._run_mutation(
+            operation="insert_rows", start_row=2, count=2
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["operation"], "insert_rows")
+        self.assertTrue(result["output_uploaded"])
+        self.assertIsNone(result["data"])
+        self.assertEqual(len(fake_client.get_calls), 1)
+        self.assertEqual(len(fake_client.put_calls), 1)
+        wb = load_workbook(io.BytesIO(fake_client.put_calls[0]["body"]))
+        try:
+            ws = wb["Sheet1"]
+            self.assertEqual(ws["A1"].value, "Name")
+            self.assertIsNone(ws["A2"].value)
+            self.assertIsNone(ws["A3"].value)
+            self.assertEqual(ws["A4"].value, "Ada")
+            self.assertEqual(ws["A5"].value, "Bob")
+        finally:
+            wb.close()
+
+    def test_insert_columns_shifts_right(self):
+        result, fake_client = self._run_mutation(
+            operation="insert_columns", start_col=2, count=1
+        )
+        self.assertTrue(result["success"])
+        wb = load_workbook(io.BytesIO(fake_client.put_calls[0]["body"]))
+        try:
+            ws = wb["Sheet1"]
+            self.assertEqual(ws["A1"].value, "Name")
+            self.assertIsNone(ws["B1"].value)
+            self.assertEqual(ws["C1"].value, "Score")
+            self.assertEqual(ws["D1"].value, "Region")
+        finally:
+            wb.close()
+
+    def test_delete_sheet_rows(self):
+        result, fake_client = self._run_mutation(
+            operation="delete_sheet_rows", start_row=2, count=1
+        )
+        self.assertTrue(result["success"])
+        wb = load_workbook(io.BytesIO(fake_client.put_calls[0]["body"]))
+        try:
+            ws = wb["Sheet1"]
+            self.assertEqual(ws["A1"].value, "Name")
+            self.assertEqual(ws["A2"].value, "Bob")
+            self.assertEqual(ws["A3"].value, "Cara")
+        finally:
+            wb.close()
+
+    def test_delete_sheet_columns(self):
+        result, fake_client = self._run_mutation(
+            operation="delete_sheet_columns", start_col=2, count=1
+        )
+        self.assertTrue(result["success"])
+        wb = load_workbook(io.BytesIO(fake_client.put_calls[0]["body"]))
+        try:
+            ws = wb["Sheet1"]
+            self.assertEqual(ws["A1"].value, "Name")
+            self.assertEqual(ws["B1"].value, "Region")
+            self.assertEqual(ws["A2"].value, "Ada")
+            self.assertEqual(ws["B2"].value, "West")
+        finally:
+            wb.close()
+
+    def test_count_defaults_to_one(self):
+        result, fake_client = self._run_mutation(
+            operation="insert_rows", start_row=2
+        )
+        self.assertTrue(result["success"])
+        wb = load_workbook(io.BytesIO(fake_client.put_calls[0]["body"]))
+        try:
+            self.assertIsNone(wb["Sheet1"]["A2"].value)
+            self.assertEqual(wb["Sheet1"]["A3"].value, "Ada")
+        finally:
+            wb.close()
+
+    def test_rejects_bool_and_float_and_string(self):
+        for bad in (True, 1.5, "2"):
+            result, fake_client = self._run_mutation(
+                operation="insert_rows", start_row=bad, count=1
+            )
+            self.assertFalse(result["success"], bad)
+            self.assertIn("positive integer", result["error"])
+            self.assertEqual(fake_client.put_calls, [])
+
+    def test_row_ops_reject_start_col(self):
+        result, fake_client = self._run_mutation(
+            operation="insert_rows", start_row=2, start_col=1
+        )
+        self.assertFalse(result["success"])
+        self.assertIn("start_col", result["error"])
+        self.assertEqual(fake_client.get_calls, [])
+
+    def test_column_ops_reject_start_row(self):
+        result, fake_client = self._run_mutation(
+            operation="insert_columns", start_col=2, start_row=1
+        )
+        self.assertFalse(result["success"])
+        self.assertIn("start_row", result["error"])
+        self.assertEqual(fake_client.get_calls, [])
+
+    def test_delete_start_beyond_used_bounds_fails(self):
+        result, fake_client = self._run_mutation(
+            operation="delete_sheet_rows", start_row=100, count=1
+        )
+        self.assertFalse(result["success"])
+        self.assertIn("exceeds worksheet bounds", result["error"])
+        self.assertEqual(fake_client.put_calls, [])
+
+    def test_start_beyond_excel_hard_limit_fails_before_download(self):
+        fake_client = _FakeClient()
+        with patch.object(remote, "_create_http_client", return_value=fake_client):
+            result = remote.execute_workbook_job(
+                operation="insert_rows",
+                input_download_url=_url("/in.xlsx"),
+                output_upload_url=_url("/out.xlsx"),
+                sheet_name="Sheet1",
+                start_row=1_048_577,
+                count=1,
+            )
+        self.assertFalse(result["success"])
+        self.assertEqual(fake_client.get_calls, [])
+
+
+class Phase4LocalHelperTests(unittest.TestCase):
+    def _write_sample(self, path: str):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        for r, row in enumerate(
+            [
+                ["Name", "Score", "Region"],
+                ["Ada", 10, "West"],
+                ["Bob", 20, "East"],
+            ],
+            start=1,
+        ):
+            for c, value in enumerate(row, start=1):
+                ws.cell(r, c, value)
+        wb.save(path)
+        wb.close()
+
+    def test_insert_and_delete_helpers(self):
+        from excel_mcp.sheet import (
+            delete_cols,
+            delete_rows,
+            insert_cols,
+            insert_row,
+        )
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "struct.xlsx")
+            self._write_sample(path)
+            insert_row(path, "Sheet1", 2, 1)
+            insert_cols(path, "Sheet1", 2, 1)
+            delete_rows(path, "Sheet1", 2, 1)
+            delete_cols(path, "Sheet1", 2, 1)
+            wb = load_workbook(path)
+            try:
+                ws = wb["Sheet1"]
+                self.assertEqual(ws["A1"].value, "Name")
+                self.assertEqual(ws["B1"].value, "Score")
+                self.assertEqual(ws["A2"].value, "Ada")
+            finally:
+                wb.close()
+
+    def test_delete_count_past_used_area(self):
+        from excel_mcp.sheet import delete_rows
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "del.xlsx")
+            self._write_sample(path)
+            # start at last used row with count beyond used area
+            delete_rows(path, "Sheet1", 3, 5)
+            wb = load_workbook(path)
+            try:
+                self.assertEqual(wb["Sheet1"]["A1"].value, "Name")
+                self.assertEqual(wb["Sheet1"]["A2"].value, "Ada")
+                self.assertIsNone(wb["Sheet1"]["A3"].value)
+            finally:
+                wb.close()
+
 
 class ExistingToolsStillWork(unittest.TestCase):
     def test_create_workbook_local_path(self):
