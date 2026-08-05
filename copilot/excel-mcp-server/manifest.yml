@@ -1,0 +1,48 @@
+# Excel MCP Server — Backend Service in the mimasa-ai Copilot app.
+# Reachable inside the cluster at:
+#   http://excel-mcp-server.${COPILOT_SERVICE_DISCOVERY_ENDPOINT}:8017/mcp
+# Not publicly exposed.
+#
+# Spec: https://aws.github.io/copilot-cli/docs/manifest/backend-service/
+
+name: excel-mcp-server
+type: Backend Service
+
+image:
+  build:
+    dockerfile: Dockerfile
+    context: .
+  port: 8017
+  healthcheck:
+    # openpyxl is pure-Python and the MCP endpoint is /mcp; a simple TCP-level
+    # check via python avoids adding curl to the slim image.
+    command: ["CMD-SHELL", "python -c \"import socket,sys; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8017)); sys.exit(0)\" || exit 1"]
+    interval: 30s
+    retries: 3
+    timeout: 5s
+    start_period: 20s
+
+cpu: 512
+memory: 1024
+platform: linux/arm64  # Fargate Graviton — matches Apple Silicon build, cheaper than x86_64
+count: 1
+exec: true
+
+network:
+  connect: true
+
+variables:
+  EXCEL_FILES_PATH: /data/excel_files
+  FASTMCP_HOST: 0.0.0.0
+  FASTMCP_PORT: "8017"
+
+storage:
+  volumes:
+    excel-data:
+      path: /data/excel_files
+      read_only: false
+      efs: true
+
+environments:
+  production:
+    count: 1
