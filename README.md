@@ -80,6 +80,17 @@ uvx excel-mcp-server streamable-http
 
 ## Environment Variables & File Path Handling
 
+This server does **not** auto-load a `.env` file. Set variables in the process environment
+(shell, Docker Compose, Kubernetes secrets, etc.) before starting the server.
+
+### Core server variables
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `EXCEL_FILES_PATH` | SSE / streamable-http filepath tools | `./excel_files` | Directory used by local filepath-based tools |
+| `FASTMCP_HOST` | No | `0.0.0.0` | Bind address for HTTP transports |
+| `FASTMCP_PORT` | No | `8017` | Listen port for HTTP transports |
+
 ### SSE and Streamable HTTP Transports
 
 When running the server with the **SSE or Streamable HTTP protocols**, you **must set the `EXCEL_FILES_PATH` environment variable on the server side**. This variable tells the server where to read and write Excel files.
@@ -101,6 +112,55 @@ You can also set the `FASTMCP_PORT` environment variable to control the port the
 ### Stdio Transport
 
 When using the **stdio protocol**, the file path is provided with each tool call, so you do **not** need to set `EXCEL_FILES_PATH` on the server. The server will use the path sent by the client for each operation.
+
+### Remote workbook job (`execute_workbook_job`)
+
+Workflows integrations call the atomic tool `execute_workbook_job`. That tool does **not**
+receive AWS credentials or raw file bytes. The client (workflows) signs short-lived S3 GET/PUT
+URLs and passes them as arguments; this server downloads, mutates, and uploads against those URLs.
+
+These variables are required on **this** Excel MCP process (local, Docker, or deployed), not in
+the workflows app `.env`:
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `EXCEL_MCP_ALLOWED_URL_HOSTS` | **Yes** (for remote jobs) | _(empty — fails closed)_ | Comma-separated **exact** hostnames allowed in signed URLs. Blocks SSRF by rejecting any other host. |
+| `EXCEL_MCP_MAX_FILE_BYTES` | No | `104857600` (100 MB) | Max workbook size for download/upload |
+| `EXCEL_MCP_REQUEST_TIMEOUT_SECONDS` | No | `120` | HTTP timeout for signed GET/PUT |
+
+**`EXCEL_MCP_ALLOWED_URL_HOSTS` rules**
+
+- Exact hostname match only (no wildcards, no path prefixes).
+- Use the virtual-hosted S3 hostname: `<bucket>.s3.<region>.amazonaws.com`.
+- Multiple hosts are comma-separated (e.g. local + staging buckets).
+- If unset or empty, remote jobs fail with: `EXCEL_MCP_ALLOWED_URL_HOSTS is not configured`.
+
+**Local development example** (PowerShell — same window you start the server from):
+
+```powershell
+$env:EXCEL_MCP_ALLOWED_URL_HOSTS = "mimasa-workflows-local-dev.s3.ap-south-1.amazonaws.com"
+$env:EXCEL_MCP_MAX_FILE_BYTES = "104857600"
+$env:EXCEL_MCP_REQUEST_TIMEOUT_SECONDS = "120"
+$env:FASTMCP_PORT = "8017"
+uv run excel-mcp-server streamable-http
+```
+
+**Docker / deployment example**
+
+```yaml
+environment:
+  EXCEL_MCP_ALLOWED_URL_HOSTS: "your-bucket.s3.ap-south-1.amazonaws.com"
+  EXCEL_MCP_MAX_FILE_BYTES: "104857600"
+  EXCEL_MCP_REQUEST_TIMEOUT_SECONDS: "120"
+  # FASTMCP_PORT is optional; defaults to 8017
+  # FASTMCP_PORT: "8017"
+```
+
+Ensure the container port mapping and workflows `EXCEL_MCP_URL` match the listen port and path
+(e.g. `http://excel-mcp:8017/mcp`).
+
+These are **not** AWS access keys. Do not put `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` on
+this service — workflows owns signing; this service only uses the signed URLs it receives.
 
 ## Available Tools
 
