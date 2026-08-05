@@ -4,3 +4,5 @@ excel_files/
 __pycache__/
 .notes/
 *.log
+.claude/
+.DS_Store
