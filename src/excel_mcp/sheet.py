@@ -4,17 +4,36 @@ from copy import copy
 
 from openpyxl import load_workbook
 from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.worksheet.cell_range import CellRange
 from openpyxl.utils import get_column_letter, column_index_from_string
 from openpyxl.styles import Font, Border, PatternFill, Side
 
-from .cell_utils import parse_cell_range
-from .exceptions import SheetError, ValidationError
+from .cell_utils import (
+    MAX_EXCEL_COL,
+    MAX_EXCEL_ROW,
+    parse_cell_range,
+    parse_cell_range_strict,
+    parse_cell_reference_strict,
+)
+from .exceptions import SheetError, ValidationError, WorkbookError
+from .workbook import validate_worksheet_name
 
 logger = logging.getLogger(__name__)
 
+
+def _validate_sheet_name(sheet_name: str) -> None:
+    try:
+        validate_worksheet_name(sheet_name)
+    except WorkbookError as exc:
+        raise SheetError(str(exc)) from exc
+
+
 def copy_sheet(filepath: str, source_sheet: str, target_sheet: str) -> Dict[str, Any]:
     """Copy a worksheet within the same workbook."""
+    wb = None
     try:
+        _validate_sheet_name(source_sheet)
+        _validate_sheet_name(target_sheet)
         wb = load_workbook(filepath)
         if source_sheet not in wb.sheetnames:
             raise SheetError(f"Source sheet '{source_sheet}' not found")
@@ -34,10 +53,15 @@ def copy_sheet(filepath: str, source_sheet: str, target_sheet: str) -> Dict[str,
     except Exception as e:
         logger.error(f"Failed to copy sheet: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
 
 def delete_sheet(filepath: str, sheet_name: str) -> Dict[str, Any]:
     """Delete a worksheet from the workbook."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
@@ -54,10 +78,16 @@ def delete_sheet(filepath: str, sheet_name: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to delete sheet: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
 
 def rename_sheet(filepath: str, old_name: str, new_name: str) -> Dict[str, Any]:
     """Rename a worksheet."""
+    wb = None
     try:
+        _validate_sheet_name(old_name)
+        _validate_sheet_name(new_name)
         wb = load_workbook(filepath)
         if old_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{old_name}' not found")
@@ -75,6 +105,9 @@ def rename_sheet(filepath: str, old_name: str, new_name: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to rename sheet: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
 
 def format_range_string(start_row: int, start_col: int, end_row: int, end_col: int) -> str:
     """Format range string from row and column indices."""
@@ -186,20 +219,50 @@ def delete_range(worksheet: Worksheet, start_cell: str, end_cell: Optional[str] 
             cell.number_format = "General"
             cell.alignment = None
 
+def _ranges_overlap(left: CellRange, right: CellRange) -> bool:
+    return not (
+        left.max_row < right.min_row
+        or left.min_row > right.max_row
+        or left.max_col < right.min_col
+        or left.min_col > right.max_col
+    )
+
+
+def _clear_cell(cell) -> None:
+    cell.value = None
+    cell.font = Font()
+    cell.border = Border()
+    cell.fill = PatternFill()
+    cell.number_format = "General"
+    cell.alignment = None
+
+
 def merge_range(filepath: str, sheet_name: str, start_cell: str, end_cell: str) -> Dict[str, Any]:
     """Merge a range of cells."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
-        start_row, start_col, end_row, end_col = parse_cell_range(start_cell, end_cell)
 
-        if end_row is None or end_col is None:
-            raise SheetError("Both start and end cells must be specified for merging")
+        try:
+            start_row, start_col, end_row, end_col = parse_cell_range_strict(
+                start_cell, end_cell
+            )
+        except ValidationError as exc:
+            raise SheetError(str(exc)) from exc
 
         range_string = format_range_string(start_row, start_col, end_row, end_col)
         worksheet = wb[sheet_name]
+        requested = CellRange(range_string)
+        for existing in worksheet.merged_cells.ranges:
+            if str(existing).upper() == range_string.upper():
+                raise SheetError(f"Range '{range_string}' is already merged")
+            if _ranges_overlap(existing, requested):
+                raise SheetError(
+                    f"Range '{range_string}' overlaps existing merged range '{existing}'"
+                )
         worksheet.merge_cells(range_string)
         wb.save(filepath)
         return {"message": f"Range '{range_string}' merged in sheet '{sheet_name}'"}
@@ -209,30 +272,37 @@ def merge_range(filepath: str, sheet_name: str, start_cell: str, end_cell: str) 
     except Exception as e:
         logger.error(f"Failed to merge range: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def unmerge_range(filepath: str, sheet_name: str, start_cell: str, end_cell: str) -> Dict[str, Any]:
     """Unmerge a range of cells."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        start_row, start_col, end_row, end_col = parse_cell_range(start_cell, end_cell)
-        
-        if end_row is None or end_col is None:
-            raise SheetError("Both start and end cells must be specified for unmerging")
+
+        try:
+            start_row, start_col, end_row, end_col = parse_cell_range_strict(
+                start_cell, end_cell
+            )
+        except ValidationError as exc:
+            raise SheetError(str(exc)) from exc
 
         range_string = format_range_string(start_row, start_col, end_row, end_col)
-        
-        # Check if range is actually merged
+
         merged_ranges = worksheet.merged_cells.ranges
         target_range = range_string.upper()
-        
+
         if not any(str(merged_range).upper() == target_range for merged_range in merged_ranges):
             raise SheetError(f"Range '{range_string}' is not merged")
-            
+
         worksheet.unmerge_cells(range_string)
         wb.save(filepath)
         return {"message": f"Range '{range_string}' unmerged successfully"}
@@ -242,10 +312,16 @@ def unmerge_range(filepath: str, sheet_name: str, start_cell: str, end_cell: str
     except Exception as e:
         logger.error(f"Failed to unmerge range: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def get_merged_ranges(filepath: str, sheet_name: str) -> list[str]:
     """Get merged cells in a worksheet."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
@@ -257,6 +333,10 @@ def get_merged_ranges(filepath: str, sheet_name: str) -> list[str]:
     except Exception as e:
         logger.error(f"Failed to get merged cells: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def copy_range_operation(
     filepath: str,
@@ -267,50 +347,82 @@ def copy_range_operation(
     target_sheet: Optional[str] = None
 ) -> Dict:
     """Copy a range of cells to another location."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if target_sheet is not None:
+            _validate_sheet_name(target_sheet)
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
-            logger.error(f"Sheet '{sheet_name}' not found")
             raise ValidationError(f"Sheet '{sheet_name}' not found")
 
+        dest_sheet = target_sheet or sheet_name
+        if dest_sheet not in wb.sheetnames:
+            raise ValidationError(f"Sheet '{dest_sheet}' not found")
+
         source_ws = wb[sheet_name]
-        target_ws = wb[target_sheet] if target_sheet else source_ws
+        target_ws = wb[dest_sheet]
 
-        # Parse source range
         try:
-            start_row, start_col, end_row, end_col = parse_cell_range(source_start, source_end)
-        except ValueError as e:
-            logger.error(f"Invalid source range: {e}")
-            raise ValidationError(f"Invalid source range: {str(e)}")
+            start_row, start_col, end_row, end_col = parse_cell_range_strict(
+                source_start, source_end
+            )
+            target_row, target_col = parse_cell_reference_strict(target_start)
+        except ValidationError:
+            raise
 
-        # Parse target starting point
-        try:
-            target_row = int(''.join(filter(str.isdigit, target_start)))
-            target_col = column_index_from_string(''.join(filter(str.isalpha, target_start)))
-        except ValueError as e:
-            logger.error(f"Invalid target cell: {e}")
-            raise ValidationError(f"Invalid target cell: {str(e)}")
+        row_span = end_row - start_row
+        col_span = end_col - start_col
+        target_end_row = target_row + row_span
+        target_end_col = target_col + col_span
+        if target_end_row > MAX_EXCEL_ROW or target_end_col > MAX_EXCEL_COL:
+            raise ValidationError("Target range exceeds Excel worksheet bounds")
 
-        # Copy the range
-        row_offset = target_row - start_row
-        col_offset = target_col - start_col
-
+        snapshot = []
         for i in range(start_row, end_row + 1):
             for j in range(start_col, end_col + 1):
                 source_cell = source_ws.cell(row=i, column=j)
-                target_cell = target_ws.cell(row=i + row_offset, column=j + col_offset)
-                target_cell.value = source_cell.value
-                if source_cell.has_style:
-                    target_cell._style = copy(source_cell._style)
+                snapshot.append(
+                    {
+                        "value": source_cell.value,
+                        "style": copy(source_cell._style) if source_cell.has_style else None,
+                        "number_format": source_cell.number_format,
+                        "alignment": copy(source_cell.alignment)
+                        if source_cell.alignment is not None
+                        else None,
+                    }
+                )
+
+        idx = 0
+        for i in range(start_row, end_row + 1):
+            for j in range(start_col, end_col + 1):
+                item = snapshot[idx]
+                idx += 1
+                target_cell = target_ws.cell(
+                    row=target_row + (i - start_row),
+                    column=target_col + (j - start_col),
+                )
+                target_cell.value = item["value"]
+                if item["style"] is not None:
+                    target_cell._style = item["style"]
+                if item["number_format"] is not None:
+                    target_cell.number_format = item["number_format"]
+                if item["alignment"] is not None:
+                    target_cell.alignment = item["alignment"]
 
         wb.save(filepath)
-        return {"message": f"Range copied successfully"}
+        return {"message": "Range copied successfully"}
 
     except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to copy range: {e}")
         raise SheetError(f"Failed to copy range: {str(e)}")
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def delete_range_operation(
     filepath: str,
@@ -319,45 +431,72 @@ def delete_range_operation(
     end_cell: Optional[str] = None,
     shift_direction: str = "up"
 ) -> Dict[str, Any]:
-    """Delete a range of cells and shift remaining cells."""
+    """Delete a range of cells and shift remaining cells within the range bounds."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate range
+
         try:
-            start_row, start_col, end_row, end_col = parse_cell_range(start_cell, end_cell)
-            if end_row and end_row > worksheet.max_row:
-                raise SheetError(f"End row {end_row} out of bounds (1-{worksheet.max_row})")
-            if end_col and end_col > worksheet.max_column:
-                raise SheetError(f"End column {end_col} out of bounds (1-{worksheet.max_column})")
-        except ValueError as e:
-            raise SheetError(f"Invalid range: {str(e)}")
-            
-        # Validate shift direction
+            start_row, start_col, end_row, end_col = parse_cell_range_strict(
+                start_cell, end_cell
+            )
+        except ValidationError as exc:
+            raise SheetError(str(exc)) from exc
+
         if shift_direction not in ["up", "left"]:
-            raise ValidationError(f"Invalid shift direction: {shift_direction}. Must be 'up' or 'left'")
-            
-        range_string = format_range_string(
-            start_row, start_col,
-            end_row or start_row,
-            end_col or start_col
-        )
-        
-        # Delete range contents
-        delete_range(worksheet, start_cell, end_cell)
-        
-        # Shift cells if needed
+            raise ValidationError(
+                f"Invalid shift direction: {shift_direction}. Must be 'up' or 'left'"
+            )
+
+        range_string = format_range_string(start_row, start_col, end_row, end_col)
+        max_row = worksheet.max_row
+        max_col = worksheet.max_column
+
         if shift_direction == "up":
-            worksheet.delete_rows(start_row, (end_row or start_row) - start_row + 1)
-        elif shift_direction == "left":
-            worksheet.delete_cols(start_col, (end_col or start_col) - start_col + 1)
-            
+            height = end_row - start_row + 1
+            for col in range(start_col, end_col + 1):
+                for row in range(start_row, max_row + 1):
+                    source_row = row + height
+                    target = worksheet.cell(row=row, column=col)
+                    if source_row <= max_row:
+                        source = worksheet.cell(row=source_row, column=col)
+                        target.value = source.value
+                        if source.has_style:
+                            target._style = copy(source._style)
+                        target.number_format = source.number_format
+                        target.alignment = (
+                            copy(source.alignment)
+                            if source.alignment is not None
+                            else None
+                        )
+                    else:
+                        _clear_cell(target)
+        else:
+            width = end_col - start_col + 1
+            for row in range(start_row, end_row + 1):
+                for col in range(start_col, max_col + 1):
+                    source_col = col + width
+                    target = worksheet.cell(row=row, column=col)
+                    if source_col <= max_col:
+                        source = worksheet.cell(row=row, column=source_col)
+                        target.value = source.value
+                        if source.has_style:
+                            target._style = copy(source._style)
+                        target.number_format = source.number_format
+                        target.alignment = (
+                            copy(source.alignment)
+                            if source.alignment is not None
+                            else None
+                        )
+                    else:
+                        _clear_cell(target)
+
         wb.save(filepath)
-        
         return {"message": f"Range {range_string} deleted successfully"}
     except (ValidationError, SheetError) as e:
         logger.error(str(e))
@@ -365,111 +504,181 @@ def delete_range_operation(
     except Exception as e:
         logger.error(f"Failed to delete range: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
 
 def insert_row(filepath: str, sheet_name: str, start_row: int, count: int = 1) -> Dict[str, Any]:
     """Insert one or more rows starting at the specified row."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if start_row < 1 or start_row > MAX_EXCEL_ROW:
+            raise ValidationError(
+                f"Start row must be between 1 and {MAX_EXCEL_ROW}"
+            )
+        if count < 1:
+            raise ValidationError("Count must be 1 or greater")
+        if start_row + count - 1 > MAX_EXCEL_ROW:
+            raise ValidationError(
+                f"Insert would exceed Excel's maximum row ({MAX_EXCEL_ROW})"
+            )
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate parameters
-        if start_row < 1:
-            raise ValidationError("Start row must be 1 or greater")
-        if count < 1:
-            raise ValidationError("Count must be 1 or greater")
-            
+        if worksheet.max_row + count > MAX_EXCEL_ROW:
+            raise ValidationError(
+                f"Inserting {count} row(s) would push used data past "
+                f"Excel's maximum row ({MAX_EXCEL_ROW})"
+            )
+
         worksheet.insert_rows(start_row, count)
         wb.save(filepath)
-        
-        return {"message": f"Inserted {count} row(s) starting at row {start_row} in sheet '{sheet_name}'"}
-    except (ValidationError, SheetError) as e:
-        logger.error(str(e))
+
+        return {
+            "message": (
+                f"Inserted {count} row(s) starting at row {start_row} "
+                f"in sheet '{sheet_name}'"
+            )
+        }
+    except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to insert rows: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def insert_cols(filepath: str, sheet_name: str, start_col: int, count: int = 1) -> Dict[str, Any]:
     """Insert one or more columns starting at the specified column."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if start_col < 1 or start_col > MAX_EXCEL_COL:
+            raise ValidationError(
+                f"Start column must be between 1 and {MAX_EXCEL_COL}"
+            )
+        if count < 1:
+            raise ValidationError("Count must be 1 or greater")
+        if start_col + count - 1 > MAX_EXCEL_COL:
+            raise ValidationError(
+                f"Insert would exceed Excel's maximum column ({MAX_EXCEL_COL})"
+            )
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate parameters
-        if start_col < 1:
-            raise ValidationError("Start column must be 1 or greater")
-        if count < 1:
-            raise ValidationError("Count must be 1 or greater")
-            
+        if worksheet.max_column + count > MAX_EXCEL_COL:
+            raise ValidationError(
+                f"Inserting {count} column(s) would push used data past "
+                f"Excel's maximum column ({MAX_EXCEL_COL})"
+            )
+
         worksheet.insert_cols(start_col, count)
         wb.save(filepath)
-        
-        return {"message": f"Inserted {count} column(s) starting at column {start_col} in sheet '{sheet_name}'"}
-    except (ValidationError, SheetError) as e:
-        logger.error(str(e))
+
+        return {
+            "message": (
+                f"Inserted {count} column(s) starting at column {start_col} "
+                f"in sheet '{sheet_name}'"
+            )
+        }
+    except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to insert columns: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def delete_rows(filepath: str, sheet_name: str, start_row: int, count: int = 1) -> Dict[str, Any]:
     """Delete one or more rows starting at the specified row."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if start_row < 1 or start_row > MAX_EXCEL_ROW:
+            raise ValidationError(
+                f"Start row must be between 1 and {MAX_EXCEL_ROW}"
+            )
+        if count < 1:
+            raise ValidationError("Count must be 1 or greater")
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate parameters
-        if start_row < 1:
-            raise ValidationError("Start row must be 1 or greater")
-        if count < 1:
-            raise ValidationError("Count must be 1 or greater")
         if start_row > worksheet.max_row:
-            raise ValidationError(f"Start row {start_row} exceeds worksheet bounds (max row: {worksheet.max_row})")
-            
+            raise ValidationError(
+                f"Start row {start_row} exceeds worksheet bounds "
+                f"(max row: {worksheet.max_row})"
+            )
+
         worksheet.delete_rows(start_row, count)
         wb.save(filepath)
-        
-        return {"message": f"Deleted {count} row(s) starting at row {start_row} in sheet '{sheet_name}'"}
-    except (ValidationError, SheetError) as e:
-        logger.error(str(e))
+
+        return {
+            "message": (
+                f"Deleted {count} row(s) starting at row {start_row} "
+                f"in sheet '{sheet_name}'"
+            )
+        }
+    except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to delete rows: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()
+
 
 def delete_cols(filepath: str, sheet_name: str, start_col: int, count: int = 1) -> Dict[str, Any]:
     """Delete one or more columns starting at the specified column."""
+    wb = None
     try:
+        _validate_sheet_name(sheet_name)
+        if start_col < 1 or start_col > MAX_EXCEL_COL:
+            raise ValidationError(
+                f"Start column must be between 1 and {MAX_EXCEL_COL}"
+            )
+        if count < 1:
+            raise ValidationError("Count must be 1 or greater")
+
         wb = load_workbook(filepath)
         if sheet_name not in wb.sheetnames:
             raise SheetError(f"Sheet '{sheet_name}' not found")
-            
+
         worksheet = wb[sheet_name]
-        
-        # Validate parameters
-        if start_col < 1:
-            raise ValidationError("Start column must be 1 or greater")
-        if count < 1:
-            raise ValidationError("Count must be 1 or greater")
         if start_col > worksheet.max_column:
-            raise ValidationError(f"Start column {start_col} exceeds worksheet bounds (max column: {worksheet.max_column})")
-            
+            raise ValidationError(
+                f"Start column {start_col} exceeds worksheet bounds "
+                f"(max column: {worksheet.max_column})"
+            )
+
         worksheet.delete_cols(start_col, count)
         wb.save(filepath)
-        
-        return {"message": f"Deleted {count} column(s) starting at column {start_col} in sheet '{sheet_name}'"}
-    except (ValidationError, SheetError) as e:
-        logger.error(str(e))
+
+        return {
+            "message": (
+                f"Deleted {count} column(s) starting at column {start_col} "
+                f"in sheet '{sheet_name}'"
+            )
+        }
+    except (ValidationError, SheetError):
         raise
     except Exception as e:
         logger.error(f"Failed to delete columns: {e}")
         raise SheetError(str(e))
+    finally:
+        if wb is not None:
+            wb.close()

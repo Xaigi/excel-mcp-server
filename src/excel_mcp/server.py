@@ -27,6 +27,7 @@ from excel_mcp.workbook import get_workbook_info
 from excel_mcp.data import write_data
 from excel_mcp.pivot import create_pivot_table as create_pivot_table_impl
 from excel_mcp.tables import create_excel_table as create_table_impl
+from excel_mcp.remote_workbook import execute_workbook_job as execute_workbook_job_impl
 from excel_mcp.sheet import (
     copy_sheet,
     delete_sheet,
@@ -328,6 +329,99 @@ def create_workbook(filepath: str) -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
+        title="Execute Workbook Job",
+        destructiveHint=True,
+    ),
+)
+def execute_workbook_job(
+    operation: str,
+    request_id: Optional[str] = None,
+    input_download_url: Optional[str] = None,
+    output_upload_url: Optional[str] = None,
+    output_content_type: Optional[str] = None,
+    upload_headers: Optional[Dict[str, str]] = None,
+    sheet_name: Optional[str] = None,
+    start_cell: str = "A1",
+    end_cell: Optional[str] = None,
+    data: Optional[List[List]] = None,
+    preview_only: bool = False,
+    cell: Optional[str] = None,
+    formula: Optional[str] = None,
+    source_sheet: Optional[str] = None,
+    target_sheet: Optional[str] = None,
+    old_name: Optional[str] = None,
+    new_name: Optional[str] = None,
+    format_options: Optional[Dict[str, Any]] = None,
+    source_start: Optional[str] = None,
+    source_end: Optional[str] = None,
+    target_start: Optional[str] = None,
+    shift_direction: str = "up",
+    include_ranges: bool = False,
+    data_range: Optional[str] = None,
+    chart_type: Optional[str] = None,
+    target_cell: Optional[str] = None,
+    title: str = "",
+    x_axis: str = "",
+    y_axis: str = "",
+    table_name: Optional[str] = None,
+    table_style: str = "TableStyleMedium9",
+    rows: Optional[List[str]] = None,
+    values: Optional[List[str]] = None,
+    columns: Optional[List[str]] = None,
+    agg_func: str = "sum",
+    start_row: Optional[int] = None,
+    start_col: Optional[int] = None,
+    count: int = 1,
+) -> Dict[str, Any]:
+    """
+    Run one atomic Excel job using signed S3 URLs.
+
+    This tool is intended for the workflow platform. Local filepath tools remain
+    available for manual testing.
+    """
+    return execute_workbook_job_impl(
+        operation=operation,
+        request_id=request_id,
+        input_download_url=input_download_url,
+        output_upload_url=output_upload_url,
+        output_content_type=output_content_type,
+        upload_headers=upload_headers,
+        sheet_name=sheet_name,
+        start_cell=start_cell,
+        end_cell=end_cell,
+        data=data,
+        preview_only=preview_only,
+        cell=cell,
+        formula=formula,
+        source_sheet=source_sheet,
+        target_sheet=target_sheet,
+        old_name=old_name,
+        new_name=new_name,
+        format_options=format_options,
+        source_start=source_start,
+        source_end=source_end,
+        target_start=target_start,
+        shift_direction=shift_direction,
+        include_ranges=include_ranges,
+        data_range=data_range,
+        chart_type=chart_type,
+        target_cell=target_cell,
+        title=title,
+        x_axis=x_axis,
+        y_axis=y_axis,
+        table_name=table_name,
+        table_style=table_style,
+        rows=rows,
+        values=values,
+        columns=columns,
+        agg_func=agg_func,
+        start_row=start_row,
+        start_col=start_col,
+        count=count,
+    )
+
+@mcp.tool(
+    annotations=ToolAnnotations(
         title="Create Worksheet",
         destructiveHint=True,
     ),
@@ -394,7 +488,7 @@ def create_pivot_table(
     rows: List[str],
     values: List[str],
     columns: Optional[List[str]] = None,
-    agg_func: str = "mean"
+    agg_func: str = "sum"
 ) -> str:
     """Create pivot table in worksheet."""
     try:
@@ -439,7 +533,7 @@ def create_table(
             table_style=table_style
         )
         return result["message"]
-    except DataError as e:
+    except (DataError, ValidationError) as e:
         return f"Error: {str(e)}"
     except Exception as e:
         logger.error(f"Error creating table: {e}")
@@ -697,26 +791,13 @@ def get_data_validation_info(
     """
     try:
         full_path = get_excel_path(filepath)
-        from openpyxl import load_workbook
-        from excel_mcp.cell_validation import get_all_validation_ranges
-        
-        wb = load_workbook(full_path, read_only=False)
-        if sheet_name not in wb.sheetnames:
-            return f"Error: Sheet '{sheet_name}' not found"
-            
-        ws = wb[sheet_name]
-        validations = get_all_validation_ranges(ws)
-        wb.close()
-        
-        if not validations:
-            return "No data validation rules found in this worksheet"
-            
+        from excel_mcp.cell_validation import get_data_validation_info as get_info
         import json
-        return json.dumps({
-            "sheet_name": sheet_name,
-            "validation_rules": validations
-        }, indent=2, default=str)
-        
+
+        result = get_info(full_path, sheet_name)
+        return json.dumps(result, indent=2, default=str)
+    except ValidationError as e:
+        return f"Error: {str(e)}"
     except Exception as e:
         logger.error(f"Error getting validation info: {e}")
         raise
