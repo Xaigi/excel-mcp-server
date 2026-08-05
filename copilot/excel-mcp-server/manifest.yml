@@ -35,6 +35,12 @@ variables:
   EXCEL_FILES_PATH: /data/excel_files
   FASTMCP_HOST: 0.0.0.0
   FASTMCP_PORT: "8017"
+  # Remote-workbook (presigned-URL) fetch config — see src/excel_mcp/remote_workbook.py.
+  # ALLOWED_URL_HOSTS is an SSRF allowlist; default here matches simstudio's dev
+  # S3 bucket, overridden per-env below for production.
+  EXCEL_MCP_ALLOWED_URL_HOSTS: mimasa-workflows-local-dev.s3.ap-south-1.amazonaws.com
+  EXCEL_MCP_MAX_FILE_BYTES: "104857600"       # 100 MiB
+  EXCEL_MCP_REQUEST_TIMEOUT_SECONDS: "120"
 
 storage:
   volumes:
@@ -46,3 +52,6 @@ storage:
 environments:
   production:
     count: 1
+    variables:
+      # Same bucket the simstudio prod service writes to (S3_BUCKET_NAME).
+      EXCEL_MCP_ALLOWED_URL_HOSTS: mimasa-ai-workflow-prod.s3.ap-south-1.amazonaws.com
